@@ -18,10 +18,11 @@ Any change that violates one of these is wrong, no matter how convenient. Flag c
 6. **In-memory state is a bounded cache, never a source of truth.** App-level eviction only; never rely on OS swap. Losing it must always be recoverable via rehydration.
 7. **Ordering = broker arrival order per partition.** No cross-partition ordering, no client-causal ordering, no CAS/conditional writes (v1). Don't fake any of these.
 8. **Delivery contract:** fan-out = at-least-latest state per key with gaps allowed (conflation), never guaranteed-contiguous events. Consumers needing every event replay the log. On any stream error: reconnect + resnapshot.
-9. **Coordination cost scales with events (deaths, rebalances), never with traffic or partition count.** etcd write load must stay proportional to coordination events.
-10. **Ownership is assigned top-down by the controller, not elected per partition.** Leases are liveness mechanisms, not consensus rounds. The controller election is the only election in the system.
-11. **Control plane down ≠ data plane down.** Existing assignments keep serving; only changes pause.
-12. **Migration safety comes from the ack fence + epoch rule, never from timing.** Timing bounds freeze duration (liveness); the epoch-closed-at-X rule gives safety.
+9. **The change is the unit of atomicity.** A change = N (key, bytes) entries in one collection = exactly one log record = one sequence number, applied as one unit everywhere. No layer may ever expose a partial change; conflation skips whole changes, never halves of one. Atomicity never spans collections (see `docs/engine-design.md` § Atomic changes).
+10. **Coordination cost scales with events (deaths, rebalances), never with traffic or partition count.** etcd write load must stay proportional to coordination events.
+11. **Ownership is assigned top-down by the controller, not elected per partition.** Leases are liveness mechanisms, not consensus rounds. The controller election is the only election in the system.
+12. **Control plane down ≠ data plane down.** Existing assignments keep serving; only changes pause.
+13. **Migration safety comes from the ack fence + epoch rule, never from timing.** Timing bounds freeze duration (liveness); the epoch-closed-at-X rule gives safety.
 
 ## Architecture (mental model)
 
