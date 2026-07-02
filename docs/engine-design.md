@@ -129,7 +129,7 @@ sequenceDiagram
 The unit of write is a **change**: one or more `(key, opaque-bytes)` entries in a single collection, committed to the log as **exactly one record** and applied as one unit everywhere. Not N records in a produce batch — a Kafka record batch is a transport unit, not a semantic one, and making consumers reassemble groups would spread complexity through every consumer forever. One record makes atomicity structural.
 
 - **One change = one record = one offset.** Keys changed together share a sequence number; "state as of sequence S" is always a whole number of changes.
-- **Entries apply in order**; a key appearing twice in a change resolves by last-wins (consistent with LWW; the audit trail keeps both entries).
+- **Keys are unique within a change.** A duplicate key is rejected (400): a shadowed intra-change entry could never be observed by any consumer, so it is dead bytes in the audit trail and almost certainly a client bug — and rejecting is backward-compatible to relax later, while allowing is not.
 - **No torn changes, ever:** no snapshot, cache state, or emitted update reflects a partial change. Conflation may skip whole changes, never halves of one. (A subscriber may still see key A from a newer change alongside key B from an older one — that is a consistent state, not a torn change.)
 - **The envelope is multi-entry from day one:** header + N `(key, payload)` entries. Payloads stay opaque; the multi-entry structure is envelope framing, not payload interpretation.
 - **One write-id per change** — the retry-dedup unit is the change, and a change lands entirely in one epoch or not at all (one record = one produce), so the migration retry story is unchanged.

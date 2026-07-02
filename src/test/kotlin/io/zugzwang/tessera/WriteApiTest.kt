@@ -37,12 +37,12 @@ class WriteApiTest {
     }
 
     @Test
-    fun `accepts a duplicate key within a change (last wins)`() = writeApiTest { client ->
+    fun `rejects a duplicate key within a change`() = writeApiTest { client ->
         val response = client.post("/v1/collections/orders/changes") {
             contentType(ContentType.Application.Json)
             setBody(changeJson("a" to byteArrayOf(1), "a" to byteArrayOf(2)))
         }
-        assertEquals(HttpStatusCode.Accepted, response.status)
+        assertEquals(HttpStatusCode.BadRequest, response.status)
     }
 
     @Test

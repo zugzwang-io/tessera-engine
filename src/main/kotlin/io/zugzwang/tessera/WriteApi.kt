@@ -15,8 +15,9 @@ import java.util.Base64
 /**
  * A change is the unit of atomicity: all of its entries are committed to the
  * collection's log as exactly one record and applied as one unit everywhere,
- * or not at all. Entries apply in order, so a key appearing twice resolves by
- * last-wins. Atomicity never spans collections.
+ * or not at all. Keys must be unique within a change — a shadowed entry could
+ * never be observed, so a duplicate is a malformed request, and rejecting now
+ * is backward-compatible to relax later. Atomicity never spans collections.
  *
  * Bounded by the broker's max message size, since one change = one record.
  */
@@ -44,6 +45,9 @@ fun Route.writeApi() {
             }
             if (request.entries.any { it.key.isBlank() }) {
                 return@post call.badRequest("entry keys must not be blank")
+            }
+            if (request.entries.size != request.entries.distinctBy { it.key }.size) {
+                return@post call.badRequest("entry keys must be unique within a change")
             }
             val entries = request.entries.map {
                 val value = runCatching { Base64.getDecoder().decode(it.value) }.getOrElse {
