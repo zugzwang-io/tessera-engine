@@ -18,3 +18,11 @@ jobs:
           java-version: 25
       - uses: gradle/actions/setup-gradle@v6
       - run: ./gradlew build
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: docker compose up --build --detach --wait
+      - run: curl -fsS http://localhost:8080/ | grep -q 'Hello, world!'
+      - run: docker compose down
