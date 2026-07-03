@@ -16,6 +16,8 @@ object EnvelopeV1 {
 
     fun encode(change: Change): ByteArray {
         val keys = change.entries.map { it.key.encodeToByteArray() }
+        // 1 version byte + 4-byte entry count, then per entry: 4-byte key length,
+        // key bytes, 4-byte value length, value bytes (the two prefixes are the 8)
         val size = 1 + 4 + change.entries.indices.sumOf { 8 + keys[it].size + change.entries[it].value.size }
         val buf = ByteBuffer.allocate(size)
         buf.put(VERSION)
