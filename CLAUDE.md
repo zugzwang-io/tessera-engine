@@ -57,6 +57,8 @@ Fixed binary envelope, versioned ABI. Must carry at minimum: tenant/collection/k
 
 Implemented so far: `EnvelopeV1` — a provisional minimal framing (version byte, entry count, then per-entry key, flags byte, value; flag bit 0 = tombstone). Tenant, epoch, write-id, and headers land with the full envelope design. **ABI freeze begins at the first real deployment**: until then v1 may be amended in place; after that, any layout change bumps the version byte and old layouts are never reinterpreted.
 
+**Deploy readers before writers.** The version byte makes an old reader *refuse* a new layout rather than misread it — which means a new-envelope writer deployed before consumers are upgraded stalls projection (correctly). Envelope version bumps roll out consumers first, producers second.
+
 ## Collection migration (the correctness-critical protocol)
 
 Moving collection C from `P_old` to `P_new` without breaking per-key order. **Fence at the ack, never at a consumer** (the old owner is a consumer; it cannot reject a produce).
