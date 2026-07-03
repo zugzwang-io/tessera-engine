@@ -151,6 +151,7 @@ For the current phase, a **Postgres projection replaces the derived compacted to
 - **Staleness is the batch window** (poll timeout + transaction time, ~1s): acceptable by decision, in exchange for much lower DB load via intra-batch conflation. Checkpoint lag vs. log end is the first-class alert metric (the successor of "compacted-topic lag").
 - **Known ceiling, accepted:** this puts write-rate-proportional load on Postgres. The projection is strictly derived and rebuildable, so graduating later (partitioned pg, or the original per-partition compacted topic) is a projection swap, not a migration. The durable contract is the *interface*: snapshot + frontier + tail.
 - **ClickHouse deferred:** `change_history` serves OLAP for now; ClickHouse arrives as an additional rebuildable projection when analytics demand columnar, backfilled from offset 0.
+- **Read API (platform server):** `GET /v1/collections/{c}` → JSON entries + `as_of_sequence`; `GET /v1/collections/{c}/keys/{k}` → raw bytes + `X-Tessera-Sequence` header, 404 when absent or tombstoned (watermark still returned). Reads serve the view at its frontier from one repeatable-read snapshot, so the watermark is exact. **Read-your-write is not guaranteed** — clients compare the watermark against their committed write sequences; 503 until the projector's first checkpoint.
 
 ---
 

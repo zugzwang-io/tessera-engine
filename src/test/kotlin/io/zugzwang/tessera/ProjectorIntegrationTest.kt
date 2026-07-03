@@ -135,6 +135,40 @@ class ProjectorIntegrationTest {
     }
 
     @Test
+    fun `the state view serves the fold at its exact frontier`() {
+        val topic = "proj-view"
+        append(
+            topic,
+            Change("orders", listOf(Change.Put("a", byteArrayOf(1)), Change.Put("b", byteArrayOf(2)))),
+            Change("orders", listOf(Change.Tombstone("b"))),
+        )
+        projector(topic).use {
+            it.start()
+            it.drain(2)
+        }
+
+        val view = PgStateView { dataSource }
+        val collection = view.collection("orders")!!
+        assertEquals(1L, collection.asOfSequence)
+        assertEquals(listOf("a"), collection.entries.map { it.key })
+
+        assertContentEquals(byteArrayOf(1), view.key("orders", "a")!!.value)
+        assertEquals(null, view.key("orders", "b")!!.value)
+        assertEquals(emptyList(), view.collection("unknown")!!.entries)
+    }
+
+    @Test
+    fun `the state view is null before the first checkpoint`() {
+        dataSource.connection.use { c ->
+            c.createStatement().use {
+                it.execute("CREATE TABLE IF NOT EXISTS projector_checkpoint (log_partition int PRIMARY KEY, log_offset bigint NOT NULL)")
+                it.execute("CREATE TABLE IF NOT EXISTS latest_state (collection text NOT NULL, key text NOT NULL, value bytea NOT NULL, log_offset bigint NOT NULL, PRIMARY KEY (collection, key))")
+            }
+        }
+        assertEquals(null, PgStateView { dataSource }.collection("orders"))
+    }
+
+    @Test
     fun `a second projector instance hits the checkpoint fence instead of interleaving`() {
         val topic = "proj-fence"
         append(topic, Change("orders", listOf(Change.Put("a", byteArrayOf(1)))))
