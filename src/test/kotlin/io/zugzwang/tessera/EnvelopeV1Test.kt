@@ -21,6 +21,32 @@ class EnvelopeV1Test {
     }
 
     @Test
+    fun `round-trips tombstone entries`() {
+        val entries = listOf(
+            Change.Entry("gone", ByteArray(0), tombstone = true),
+            Change.Entry("kept", byteArrayOf(7)),
+        )
+        val decoded = EnvelopeV1.decode(EnvelopeV1.encode(Change("orders", entries)))
+
+        assertEquals(listOf(true, false), decoded.map { it.tombstone })
+        assertContentEquals(byteArrayOf(7), decoded[1].value)
+    }
+
+    @Test
+    fun `refuses to encode a tombstone carrying a value`() {
+        val change = Change("orders", listOf(Change.Entry("a", byteArrayOf(1), tombstone = true)))
+        assertFailsWith<IllegalArgumentException> { EnvelopeV1.encode(change) }
+    }
+
+    @Test
+    fun `rejects unknown entry flags`() {
+        val bytes = EnvelopeV1.encode(Change("orders", listOf(Change.Entry("a", byteArrayOf(1)))))
+        // flags byte of the first entry: version(1) + count(4) + key length(4) + key "a"(1)
+        bytes[10] = 2
+        assertFailsWith<IllegalArgumentException> { EnvelopeV1.decode(bytes) }
+    }
+
+    @Test
     fun `rejects an unknown version`() {
         val bytes = EnvelopeV1.encode(Change("orders", listOf(Change.Entry("a", byteArrayOf(1)))))
         bytes[0] = 99

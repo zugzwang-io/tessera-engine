@@ -37,7 +37,11 @@ class RedpandaIntegrationTest {
         val log = changeLog("commit-test")
         val change = Change(
             "orders",
-            listOf(Change.Entry("a", byteArrayOf(1, 2)), Change.Entry("b", ByteArray(0))),
+            listOf(
+                Change.Entry("a", byteArrayOf(1, 2)),
+                Change.Entry("b", ByteArray(0)),
+                Change.Entry("c", ByteArray(0), tombstone = true),
+            ),
         )
 
         assertEquals(0, log.append(change))
@@ -47,9 +51,10 @@ class RedpandaIntegrationTest {
         assertEquals(2, records.size)
         val (collection, entries) = records.first()
         assertEquals("orders", collection)
-        assertEquals(listOf("a", "b"), entries.map { it.key })
+        assertEquals(listOf("a", "b", "c"), entries.map { it.key })
         assertContentEquals(byteArrayOf(1, 2), entries[0].value)
         assertContentEquals(ByteArray(0), entries[1].value)
+        assertEquals(listOf(false, false, true), entries.map { it.tombstone })
     }
 
     @Test

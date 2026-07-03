@@ -6,6 +6,7 @@ import io.ktor.server.response.respond
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.RoutingCall
+import io.ktor.server.routing.delete
 import io.ktor.server.routing.post
 import io.ktor.server.routing.put
 import io.ktor.server.routing.route
@@ -27,15 +28,19 @@ const val MAX_CHANGE_BYTES = 1 shl 20
 @Serializable
 data class ChangeRequest(val entries: List<ChangeEntry>)
 
-/** [value] is base64-encoded opaque bytes; the engine never interprets them. */
+/**
+ * [value] is base64-encoded opaque bytes; the engine never interprets them.
+ * A tombstone entry deletes its key from the latest-state view and must not
+ * carry a value; a non-tombstone entry must.
+ */
 @Serializable
-data class ChangeEntry(val key: String, val value: String)
+data class ChangeEntry(val key: String, val value: String? = null, val tombstone: Boolean = false)
 
 @Serializable
 data class ChangeCommitted(val sequence: Long)
 
 data class Change(val collection: String, val entries: List<Entry>) {
-    data class Entry(val key: String, val value: ByteArray)
+    data class Entry(val key: String, val value: ByteArray, val tombstone: Boolean = false)
 }
 
 fun Route.writeApi(changeLog: ChangeLog) {
@@ -53,11 +58,20 @@ fun Route.writeApi(changeLog: ChangeLog) {
             if (request.entries.size != request.entries.distinctBy { it.key }.size) {
                 return@post call.badRequest("entry keys must be unique within a change")
             }
-            val entries = request.entries.map {
-                val value = runCatching { Base64.getDecoder().decode(it.value) }.getOrElse {
-                    return@post call.badRequest("entry values must be base64")
+            val entries = request.entries.map { entry ->
+                if (entry.tombstone) {
+                    if (entry.value != null) {
+                        return@post call.badRequest("a tombstone entry must not carry a value")
+                    }
+                    Change.Entry(entry.key, ByteArray(0), tombstone = true)
+                } else {
+                    val encoded = entry.value
+                        ?: return@post call.badRequest("a non-tombstone entry requires a value")
+                    val value = runCatching { Base64.getDecoder().decode(encoded) }.getOrElse {
+                        return@post call.badRequest("entry values must be base64")
+                    }
+                    Change.Entry(entry.key, value)
                 }
-                Change.Entry(it.key, value)
             }
             call.commit(changeLog, Change(call.collection(), entries))
         }
@@ -65,6 +79,11 @@ fun Route.writeApi(changeLog: ChangeLog) {
         put("/keys/{key}") {
             val value = call.receive<ByteArray>()
             val entry = Change.Entry(call.parameters["key"]!!, value)
+            call.commit(changeLog, Change(call.collection(), listOf(entry)))
+        }
+
+        delete("/keys/{key}") {
+            val entry = Change.Entry(call.parameters["key"]!!, ByteArray(0), tombstone = true)
             call.commit(changeLog, Change(call.collection(), listOf(entry)))
         }
     }
