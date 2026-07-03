@@ -33,3 +33,21 @@ dependencies {
 tasks.test {
     useJUnitPlatform()
 }
+
+// End-to-end suite: boots the real Dockerfile image against Redpanda.
+// Deliberately not wired into `check` so the local build loop stays fast;
+// CI runs it as its own job.
+testing {
+    suites {
+        val e2eTest by registering(JvmTestSuite::class) {
+            useJUnitJupiter()
+            dependencies {
+                implementation(project())
+                implementation(libs.kafka.clients)
+                implementation(libs.kotlin.test.junit5)
+                implementation(libs.testcontainers.junit.jupiter)
+                implementation(libs.testcontainers.redpanda)
+            }
+        }
+    }
+}
