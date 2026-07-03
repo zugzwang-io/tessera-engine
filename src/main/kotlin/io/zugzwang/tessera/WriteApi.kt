@@ -40,7 +40,14 @@ data class ChangeEntry(val key: String, val value: String? = null, val tombstone
 data class ChangeCommitted(val sequence: Long)
 
 data class Change(val collection: String, val entries: List<Entry>) {
-    data class Entry(val key: String, val value: ByteArray, val tombstone: Boolean = false)
+    /** A tombstone has no value by construction — "tombstone with a value" is unrepresentable. */
+    sealed interface Entry {
+        val key: String
+    }
+
+    data class Put(override val key: String, val value: ByteArray) : Entry
+
+    data class Tombstone(override val key: String) : Entry
 }
 
 fun Route.writeApi(changeLog: ChangeLog) {
@@ -63,14 +70,14 @@ fun Route.writeApi(changeLog: ChangeLog) {
                     if (entry.value != null) {
                         return@post call.badRequest("a tombstone entry must not carry a value")
                     }
-                    Change.Entry(entry.key, ByteArray(0), tombstone = true)
+                    Change.Tombstone(entry.key)
                 } else {
                     val encoded = entry.value
                         ?: return@post call.badRequest("a non-tombstone entry requires a value")
                     val value = runCatching { Base64.getDecoder().decode(encoded) }.getOrElse {
                         return@post call.badRequest("entry values must be base64")
                     }
-                    Change.Entry(entry.key, value)
+                    Change.Put(entry.key, value)
                 }
             }
             call.commit(changeLog, Change(call.collection(), entries))
@@ -78,12 +85,12 @@ fun Route.writeApi(changeLog: ChangeLog) {
 
         put("/keys/{key}") {
             val value = call.receive<ByteArray>()
-            val entry = Change.Entry(call.parameters["key"]!!, value)
+            val entry = Change.Put(call.parameters["key"]!!, value)
             call.commit(changeLog, Change(call.collection(), listOf(entry)))
         }
 
         delete("/keys/{key}") {
-            val entry = Change.Entry(call.parameters["key"]!!, ByteArray(0), tombstone = true)
+            val entry = Change.Tombstone(call.parameters["key"]!!)
             call.commit(changeLog, Change(call.collection(), listOf(entry)))
         }
     }
@@ -92,7 +99,9 @@ fun Route.writeApi(changeLog: ChangeLog) {
 private val logger = LoggerFactory.getLogger("io.zugzwang.tessera.WriteApi")
 
 private suspend fun RoutingCall.commit(changeLog: ChangeLog, change: Change) {
-    val size = change.entries.sumOf { it.key.length + it.value.size }
+    val size = change.entries.sumOf {
+        it.key.length + if (it is Change.Put) it.value.size else 0
+    }
     if (size > MAX_CHANGE_BYTES) {
         return respondText("change exceeds $MAX_CHANGE_BYTES bytes", status = HttpStatusCode.PayloadTooLarge)
     }

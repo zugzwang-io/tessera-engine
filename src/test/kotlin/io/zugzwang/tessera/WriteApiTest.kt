@@ -15,6 +15,7 @@ import java.util.Base64
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 
 class RecordingChangeLog : ChangeLog {
     val changes = mutableListOf<Change>()
@@ -55,7 +56,7 @@ class WriteApiTest {
         val change = changeLog.changes.single()
         assertEquals("orders", change.collection)
         assertEquals(listOf("a", "b"), change.entries.map { it.key })
-        assertContentEquals(byteArrayOf(1, 2), change.entries[0].value)
+        assertContentEquals(byteArrayOf(1, 2), assertIs<Change.Put>(change.entries[0]).value)
     }
 
     @Test
@@ -98,9 +99,8 @@ class WriteApiTest {
         assertEquals("""{"sequence":0}""", response.bodyAsText())
 
         val entry = changeLog.changes.single().entries.single()
+        assertIs<Change.Tombstone>(entry)
         assertEquals("a", entry.key)
-        assertEquals(true, entry.tombstone)
-        assertContentEquals(ByteArray(0), entry.value)
     }
 
     @Test
@@ -110,7 +110,7 @@ class WriteApiTest {
             setBody("""{"entries":[{"key":"a","value":"AQ=="},{"key":"b","tombstone":true}]}""")
         }
         assertEquals(HttpStatusCode.OK, response.status)
-        assertEquals(listOf(false, true), changeLog.changes.single().entries.map { it.tombstone })
+        assertEquals(listOf(false, true), changeLog.changes.single().entries.map { it is Change.Tombstone })
     }
 
     @Test
