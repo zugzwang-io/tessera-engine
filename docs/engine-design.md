@@ -155,6 +155,29 @@ For the current phase, a **Postgres projection replaces the derived compacted to
 
 ---
 
+## Collection size bounds (decided 2026-07-02)
+
+Messages are bounded (max change size = broker max message size), but the *collection* is not: the latest-per-key map grows monotonically with key count (minus tombstones). Unbounded keyspace breaks five load-bearing surfaces at once: the in-memory cache (eviction unit is the whole collection — a pinned collection can blow the hard cap by itself, and no eviction policy is allowed to save you), registration snapshots (snapshot-at-L is a full copy of the map), rehydration time on miss/failover, migration PREPARE (the redesign bounds the *freeze*, but pre-warm time is still proportional to collection size — the remedy for heat stops working exactly when the thing is biggest), and Postgres `latest_state` row counts.
+
+The tempting fixes all violate invariants: per-key eviction of a live collection breaks the snapshot-at-L contract (a map with holes can't serve it); "conflate it away" is a delivery degrade, not a state degrade — dropping keys emits a wrong snapshot; TTL/auto-expiry without a log record breaks rebuildable-from-log (a janitor writing tombstones is possible but pushes policy semantics into the core — keep it client-side); OS swap is banned for good reason.
+
+**Decision: a collection is bounded by contract** — max latest-state bytes *and* max key count (key count matters independently: per-entry map overhead, snapshot entry counts, pg rows). This is the size-axis twin of "too hot? shard your keyspace": too big → shard your keyspace. The engine never splits a collection on either axis.
+
+- **Accounting is a derived projection.** The owner already folds the log into the latest-per-key map; maintaining `(key_count, state_bytes)` is O(1) per entry applied (add new value size, subtract replaced/tombstoned). Rebuildable from the log by construction — drift cannot be permanent. The pg projector maintains the same numbers transactionally per batch.
+- **Enforcement is soft and lease-shaped, never synchronous.** The write path is stateless and doesn't know collection size — don't make it. On threshold cross, the owner flips a `writable` bit on the collection's placement record; it propagates to platform servers through the same leased-cache machinery as `(C → P, epoch)`. Writes appended during the propagation window still land, ack, and apply — overshoot is bounded by (lease TTL × write rate), acceptable because a quota is resource protection, not a correctness invariant. Coordination cost stays proportional to events (a threshold crossing), not traffic.
+- **Tombstone-only changes stay admitted when over quota** — otherwise the collection is bricked (deletes need writes). The write path reads the tombstone flag from envelope framing, which is the engine's own ABI, not payload interpretation. A change mixing puts and tombstones counts as a put.
+- **Reject loudly, degrade nowhere silently.** Over-quota → distinct retryable-with-action error code. Bytes/keys per collection are first-class metrics; alert on approach (~80%), not just breach.
+- **Limits live on the placement row in Postgres** (per-collection config, tenant-level defaults), cached alongside the lease.
+
+**Sizing the default (agent-fleet reasoning, 2026 numbers).** Frontier context windows have converged at ~1M tokens (Claude Fable 5/Opus 4.8, GPT-5.5, Gemini 3.1 Pro; outliers to 2M–10M) ≈ **4 MB of text per full agent context** — the pathological "one agent dumps everything" bound, and effective long-context recall degrades before the advertised window, so real frameworks share distilled state, not transcripts. Realistic per-agent shared state: status/heartbeat/claims 1–10 KB; plans/summaries/findings 10–500 KB; artifacts and raw contexts belong in object storage with a pointer in the collection. One-collection-one-lane throughput independently caps a collection at squad scale (~10–1,000 agents), not fleet scale. Scenario math: coordination-only squad ≈ 10 MB; rich working-state sharing ≈ 100 MB; context-dumping abuse ≈ multi-GB — exactly what the bound should refuse. Comparable coordination substrates agree small-by-design: etcd 2 GB default *per cluster* (1.5 MB/value), ZooKeeper 1 MB/znode, DynamoDB 400 KB/item.
+
+- **Per-value ≤ 1 MiB** (already implied by max change size = broker max message). Deliberately smaller than one full context — forces the distill-or-pointer pattern at the API boundary rather than by documentation.
+- **Per-collection default: 256 MB latest-state bytes, 1M keys**; configurable per tenant, hard ceiling ~1 GB. Converges from both directions: realistic need tops out ~100 MB, and snapshot/rehydration SLOs (256 MB ≈ 2 s on ~1 Gbps effective; pre-warm in seconds keeps migration usable) top out at a few hundred MB. 2–5× headroom over need while staying inside SLO. Context-window growth only moves the anti-pattern scenario, so the default shouldn't need to chase model releases; per-collection config is the escape hatch.
+
+**Explicitly not solved here:** per-tenant *aggregate* quotas (many medium collections, one tenant) — that's the pinned-set open issue; this cap bounds the worst single object and is a prerequisite, not a substitute. Cost acknowledged: this deepens the "shard your own keyspace" DX tax flagged in the strategic review; softening it is a client-library concern (sharding helper convention), not a core-engine one.
+
+---
+
 ## Design review — open issues (to fix)
 
 *Added from design review. Ordered roughly by severity. See also "Proposed migration redesign" below, which addresses the first cluster.*
@@ -169,7 +192,7 @@ For the current phase, a **Postgres projection replaces the derived compacted to
 ### Availability & load
 
 - [ ] **Migration write-freeze is unbounded.** Freeze = drain wait + full latest-per-key copy, proportional to key cardinality (user-controlled). Our only remedy for a hot partition requires an outage proportional to the hot thing. Fix: pre-warm the new owner before fencing (see redesign).
-- [ ] **Pinned LRU set is unbounded → OOM, not a cache.** "Never evict live state" + "memory scales with active subscriptions" means one tenant subscribing to a huge number of cold collections blows the hard cap, with no defined behavior. Need per-tenant subscription/pinned-byte quotas and a defined degrade mode (refuse registration, or snapshot-on-demand without pinning).
+- [ ] **Pinned LRU set is unbounded → OOM, not a cache.** "Never evict live state" + "memory scales with active subscriptions" means one tenant subscribing to a huge number of cold collections blows the hard cap, with no defined behavior. Need per-tenant subscription/pinned-byte quotas and a defined degrade mode (refuse registration, or snapshot-on-demand without pinning). *Partially addressed:* the per-collection half is decided (see "Collection size bounds" above — bounds the worst single object); the per-tenant aggregate half remains open.
 - [ ] **Thundering herd on owner death.** Server dies → all its subscribers reconnect at once → new owners cold-rehydrate many collections while serving a snapshot storm. Lease failover is sub-second; *service* failover is not. Need reconnect jitter, snapshot coalescing (one rehydration serves N waiting registrants), possibly warm standbys.
 - [ ] **Head-of-line blocking within a partition.** One hot collection delays consumption/fan-out for every collection sharing the partition, and the fix (migration) is heavyweight. Need per-tenant/collection produce quotas at minimum.
 
