@@ -39,11 +39,8 @@ class KafkaChangeLog(
     }
 
     companion object {
-        fun fromEnv(): KafkaChangeLog {
-            val bootstrap = System.getenv("KAFKA_BOOTSTRAP_SERVERS") ?: "localhost:9092"
-            val topic = System.getenv("TESSERA_LOG_TOPIC") ?: "tessera-log"
-            return KafkaChangeLog(producer(bootstrap), topic)
-        }
+        fun fromConfig(config: Config): KafkaChangeLog =
+            KafkaChangeLog(producer(config.kafkaBootstrapServers), config.logTopic)
 
         fun producer(bootstrapServers: String): KafkaProducer<String, ByteArray> {
             val config = mapOf<String, Any>(

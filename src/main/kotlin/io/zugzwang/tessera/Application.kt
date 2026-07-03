@@ -11,11 +11,13 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
 
 fun main() {
-    val port = System.getenv("PORT")?.toInt() ?: 8080
-    embeddedServer(Netty, port = port, module = Application::module).start(wait = true)
+    val config = Config.fromEnv()
+    embeddedServer(Netty, port = config.port) {
+        module(KafkaChangeLog.fromConfig(config))
+    }.start(wait = true)
 }
 
-fun Application.module(changeLog: ChangeLog = KafkaChangeLog.fromEnv()) {
+fun Application.module(changeLog: ChangeLog = KafkaChangeLog.fromConfig(Config.fromEnv())) {
     install(ContentNegotiation) {
         json()
     }
