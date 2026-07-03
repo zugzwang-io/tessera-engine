@@ -4,6 +4,7 @@ import io.ktor.client.HttpClient
 import io.ktor.client.request.put
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
+import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
@@ -11,12 +12,26 @@ import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
 import java.util.Base64
 import kotlin.test.Test
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+
+class RecordingChangeLog : ChangeLog {
+    val changes = mutableListOf<Change>()
+    var failure: Exception? = null
+
+    override suspend fun append(change: Change): Long {
+        failure?.let { throw it }
+        changes += change
+        return (changes.size - 1).toLong()
+    }
+}
 
 class WriteApiTest {
 
+    private val changeLog = RecordingChangeLog()
+
     private fun writeApiTest(block: suspend ApplicationTestBuilder.(HttpClient) -> Unit) = testApplication {
-        application { module() }
+        application { module(changeLog) }
         block(client)
     }
 
@@ -28,12 +43,32 @@ class WriteApiTest {
     }
 
     @Test
-    fun `accepts a multi-entry change`() = writeApiTest { client ->
+    fun `commits a multi-entry change and returns its sequence`() = writeApiTest { client ->
         val response = client.post("/v1/collections/orders/changes") {
             contentType(ContentType.Application.Json)
             setBody(changeJson("a" to byteArrayOf(1, 2), "b" to byteArrayOf(3)))
         }
-        assertEquals(HttpStatusCode.Accepted, response.status)
+        assertEquals(HttpStatusCode.OK, response.status)
+        assertEquals("""{"sequence":0}""", response.bodyAsText())
+
+        val change = changeLog.changes.single()
+        assertEquals("orders", change.collection)
+        assertEquals(listOf("a", "b"), change.entries.map { it.key })
+        assertContentEquals(byteArrayOf(1, 2), change.entries[0].value)
+    }
+
+    @Test
+    fun `sequences increase per committed change`() = writeApiTest { client ->
+        client.put("/v1/collections/orders/keys/a") { setBody(byteArrayOf(1)) }
+        val response = client.put("/v1/collections/orders/keys/b") { setBody(byteArrayOf(2)) }
+        assertEquals("""{"sequence":1}""", response.bodyAsText())
+    }
+
+    @Test
+    fun `responds 503 when the log is unavailable`() = writeApiTest { client ->
+        changeLog.failure = RuntimeException("broker down")
+        val response = client.put("/v1/collections/orders/keys/a") { setBody(byteArrayOf(1)) }
+        assertEquals(HttpStatusCode.ServiceUnavailable, response.status)
     }
 
     @Test
@@ -46,12 +81,13 @@ class WriteApiTest {
     }
 
     @Test
-    fun `accepts a single-key put of raw bytes`() = writeApiTest { client ->
+    fun `commits a single-key put of raw bytes`() = writeApiTest { client ->
         val response = client.put("/v1/collections/orders/keys/a") {
             contentType(ContentType.Application.OctetStream)
             setBody(byteArrayOf(1, 2, 3))
         }
-        assertEquals(HttpStatusCode.Accepted, response.status)
+        assertEquals(HttpStatusCode.OK, response.status)
+        assertEquals("""{"sequence":0}""", response.bodyAsText())
     }
 
     @Test
@@ -100,11 +136,11 @@ class WriteApiTest {
     }
 
     @Test
-    fun `accepts an empty value (opaque bytes include zero bytes)`() = writeApiTest { client ->
+    fun `commits an empty value (opaque bytes include zero bytes)`() = writeApiTest { client ->
         val response = client.put("/v1/collections/orders/keys/a") {
             contentType(ContentType.Application.OctetStream)
             setBody(ByteArray(0))
         }
-        assertEquals(HttpStatusCode.Accepted, response.status)
+        assertEquals(HttpStatusCode.OK, response.status)
     }
 }

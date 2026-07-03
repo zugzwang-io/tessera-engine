@@ -55,6 +55,8 @@ Any change that violates one of these is wrong, no matter how convenient. Flag c
 
 Fixed binary envelope, versioned ABI. Must carry at minimum: tenant/collection/key, **epoch**, **write-id** (for retry dedup across partitions), and headers for the agent convention (session/agent IDs, event type, parent-span). Payload is opaque bytes. Treat envelope changes as ABI changes: versioned, additive, never reinterpreted.
 
+Implemented so far: `EnvelopeV1` — a provisional minimal framing (version byte, entry count, length-prefixed multi-key entries). Tenant, epoch, write-id, and headers land with the full envelope design; any layout change bumps the version byte.
+
 ## Collection migration (the correctness-critical protocol)
 
 Moving collection C from `P_old` to `P_new` without breaking per-key order. **Fence at the ack, never at a consumer** (the old owner is a consumer; it cannot reject a produce).

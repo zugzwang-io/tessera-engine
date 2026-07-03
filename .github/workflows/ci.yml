@@ -25,4 +25,9 @@ jobs:
       - uses: actions/checkout@v7
       - run: docker compose up --build --detach --wait
       - run: curl -fsS http://localhost:8080/ | grep -q 'Hello, world!'
+      - name: Write a change through to the log
+        run: |
+          curl -fsS -X POST -H 'Content-Type: application/json' \
+            -d '{"entries":[{"key":"smoke","value":"AQ=="}]}' \
+            http://localhost:8080/v1/collections/smoke/changes | grep -q '"sequence":0'
       - run: docker compose down

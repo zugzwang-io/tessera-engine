@@ -10,6 +10,7 @@ import io.ktor.server.routing.post
 import io.ktor.server.routing.put
 import io.ktor.server.routing.route
 import kotlinx.serialization.Serializable
+import org.slf4j.LoggerFactory
 import java.util.Base64
 
 /**
@@ -30,11 +31,14 @@ data class ChangeRequest(val entries: List<ChangeEntry>)
 @Serializable
 data class ChangeEntry(val key: String, val value: String)
 
+@Serializable
+data class ChangeCommitted(val sequence: Long)
+
 data class Change(val collection: String, val entries: List<Entry>) {
     data class Entry(val key: String, val value: ByteArray)
 }
 
-fun Route.writeApi() {
+fun Route.writeApi(changeLog: ChangeLog) {
     route("/v1/collections/{collection}") {
         post("/changes") {
             val request = runCatching { call.receive<ChangeRequest>() }.getOrElse {
@@ -55,24 +59,29 @@ fun Route.writeApi() {
                 }
                 Change.Entry(it.key, value)
             }
-            call.accept(Change(call.collection(), entries))
+            call.commit(changeLog, Change(call.collection(), entries))
         }
 
         put("/keys/{key}") {
             val value = call.receive<ByteArray>()
             val entry = Change.Entry(call.parameters["key"]!!, value)
-            call.accept(Change(call.collection(), listOf(entry)))
+            call.commit(changeLog, Change(call.collection(), listOf(entry)))
         }
     }
 }
 
-private suspend fun RoutingCall.accept(change: Change) {
+private val logger = LoggerFactory.getLogger("io.zugzwang.tessera.WriteApi")
+
+private suspend fun RoutingCall.commit(changeLog: ChangeLog, change: Change) {
     val size = change.entries.sumOf { it.key.length + it.value.size }
     if (size > MAX_CHANGE_BYTES) {
         return respondText("change exceeds $MAX_CHANGE_BYTES bytes", status = HttpStatusCode.PayloadTooLarge)
     }
-    // Commit to the log lands in a follow-up PR; for now the change is validated and dropped.
-    respond(HttpStatusCode.Accepted)
+    val sequence = runCatching { changeLog.append(change) }.getOrElse { cause ->
+        logger.warn("append to {} failed", change.collection, cause)
+        return respondText("log unavailable, retry", status = HttpStatusCode.ServiceUnavailable)
+    }
+    respond(ChangeCommitted(sequence))
 }
 
 private fun RoutingCall.collection(): String = parameters["collection"]!!
