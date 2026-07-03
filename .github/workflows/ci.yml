@@ -1,8 +1,8 @@
 name: CI
 
+# All PRs, not just PRs to main, so stacked PRs get CI too.
 on:
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read
