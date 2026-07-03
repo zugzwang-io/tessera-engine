@@ -55,7 +55,7 @@ Any change that violates one of these is wrong, no matter how convenient. Flag c
 
 Fixed binary envelope, versioned ABI. Must carry at minimum: tenant/collection/key, **epoch**, **write-id** (for retry dedup across partitions), and headers for the agent convention (session/agent IDs, event type, parent-span). Payload is opaque bytes. Treat envelope changes as ABI changes: versioned, additive, never reinterpreted.
 
-Implemented so far: `EnvelopeV1` — a provisional minimal framing (version byte, entry count, length-prefixed multi-key entries). Tenant, epoch, write-id, and headers land with the full envelope design; any layout change bumps the version byte.
+Implemented so far: `EnvelopeV1` — a provisional minimal framing (version byte, entry count, then per-entry key, flags byte, value; flag bit 0 = tombstone). Tenant, epoch, write-id, and headers land with the full envelope design. **ABI freeze begins at the first real deployment**: until then v1 may be amended in place; after that, any layout change bumps the version byte and old layouts are never reinterpreted.
 
 ## Collection migration (the correctness-critical protocol)
 
@@ -83,7 +83,7 @@ Tracked in `docs/engine-design.md` § Design review. When touching adjacent code
 - **Pinned-set quotas**: per-tenant subscription/pinned-byte quotas + defined degrade mode (the pinned LRU set is currently unbounded → OOM).
 - **Thundering herd on owner death**: reconnect jitter, snapshot coalescing (one rehydration serves N registrants), maybe warm standbys.
 - **Head-of-line blocking**: per-tenant/collection produce quotas.
-- **Deletes/tombstones**: undefined across compacted topic, LRU, snapshots, fan-out, retention. Product-critical (GDPR); intended direction: crypto-shredding via per-collection/tenant keys.
+- **Deletes/tombstones**: change-level semantics decided (tombstone entries in the envelope remove keys from the latest-state view; see docs § Atomic changes). Still open: retention/compaction interplay and true erasure — product-critical (GDPR); intended direction: crypto-shredding via per-collection/tenant keys.
 - **Missing sections**: authn/authz + tenant isolation, payload size limits, envelope versioning policy, DR/geo runbook, observability for correctness invariants.
 
 ## Observability requirements

@@ -6,6 +6,7 @@ import io.ktor.server.response.respond
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.RoutingCall
+import io.ktor.server.routing.delete
 import io.ktor.server.routing.post
 import io.ktor.server.routing.put
 import io.ktor.server.routing.route
@@ -27,15 +28,26 @@ const val MAX_CHANGE_BYTES = 1 shl 20
 @Serializable
 data class ChangeRequest(val entries: List<ChangeEntry>)
 
-/** [value] is base64-encoded opaque bytes; the engine never interprets them. */
+/**
+ * [value] is base64-encoded opaque bytes; the engine never interprets them.
+ * A tombstone entry deletes its key from the latest-state view and must not
+ * carry a value; a non-tombstone entry must.
+ */
 @Serializable
-data class ChangeEntry(val key: String, val value: String)
+data class ChangeEntry(val key: String, val value: String? = null, val tombstone: Boolean = false)
 
 @Serializable
 data class ChangeCommitted(val sequence: Long)
 
 data class Change(val collection: String, val entries: List<Entry>) {
-    data class Entry(val key: String, val value: ByteArray)
+    /** A tombstone has no value by construction — "tombstone with a value" is unrepresentable. */
+    sealed interface Entry {
+        val key: String
+    }
+
+    data class Put(override val key: String, val value: ByteArray) : Entry
+
+    data class Tombstone(override val key: String) : Entry
 }
 
 fun Route.writeApi(changeLog: ChangeLog) {
@@ -53,18 +65,32 @@ fun Route.writeApi(changeLog: ChangeLog) {
             if (request.entries.size != request.entries.distinctBy { it.key }.size) {
                 return@post call.badRequest("entry keys must be unique within a change")
             }
-            val entries = request.entries.map {
-                val value = runCatching { Base64.getDecoder().decode(it.value) }.getOrElse {
-                    return@post call.badRequest("entry values must be base64")
+            val entries = request.entries.map { entry ->
+                if (entry.tombstone) {
+                    if (entry.value != null) {
+                        return@post call.badRequest("a tombstone entry must not carry a value")
+                    }
+                    Change.Tombstone(entry.key)
+                } else {
+                    val encoded = entry.value
+                        ?: return@post call.badRequest("a non-tombstone entry requires a value")
+                    val value = runCatching { Base64.getDecoder().decode(encoded) }.getOrElse {
+                        return@post call.badRequest("entry values must be base64")
+                    }
+                    Change.Put(entry.key, value)
                 }
-                Change.Entry(it.key, value)
             }
             call.commit(changeLog, Change(call.collection(), entries))
         }
 
         put("/keys/{key}") {
             val value = call.receive<ByteArray>()
-            val entry = Change.Entry(call.parameters["key"]!!, value)
+            val entry = Change.Put(call.parameters["key"]!!, value)
+            call.commit(changeLog, Change(call.collection(), listOf(entry)))
+        }
+
+        delete("/keys/{key}") {
+            val entry = Change.Tombstone(call.parameters["key"]!!)
             call.commit(changeLog, Change(call.collection(), listOf(entry)))
         }
     }
@@ -73,7 +99,9 @@ fun Route.writeApi(changeLog: ChangeLog) {
 private val logger = LoggerFactory.getLogger("io.zugzwang.tessera.WriteApi")
 
 private suspend fun RoutingCall.commit(changeLog: ChangeLog, change: Change) {
-    val size = change.entries.sumOf { it.key.length + it.value.size }
+    val size = change.entries.sumOf {
+        it.key.length + if (it is Change.Put) it.value.size else 0
+    }
     if (size > MAX_CHANGE_BYTES) {
         return respondText("change exceeds $MAX_CHANGE_BYTES bytes", status = HttpStatusCode.PayloadTooLarge)
     }

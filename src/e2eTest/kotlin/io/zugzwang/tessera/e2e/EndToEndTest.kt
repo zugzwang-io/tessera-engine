@@ -1,5 +1,6 @@
 package io.zugzwang.tessera.e2e
 
+import io.zugzwang.tessera.Change
 import io.zugzwang.tessera.EnvelopeV1
 import org.apache.kafka.clients.consumer.ConsumerConfig
 import org.apache.kafka.clients.consumer.KafkaConsumer
@@ -22,6 +23,7 @@ import java.time.Duration
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 
 /** The app as it ships: built from the Dockerfile, wired to Redpanda over the container network. */
 @Testcontainers
@@ -76,8 +78,8 @@ class EndToEndTest {
         val (collection, entries) = records.first()
         assertEquals("orders", collection)
         assertEquals(listOf("a", "b"), entries.map { it.key })
-        assertContentEquals(byteArrayOf(1, 2), entries[0].value)
-        assertContentEquals(ByteArray(0), entries[1].value)
+        assertContentEquals(byteArrayOf(1, 2), assertIs<Change.Put>(entries[0]).value)
+        assertContentEquals(ByteArray(0), assertIs<Change.Put>(entries[1]).value)
     }
 
     @Test

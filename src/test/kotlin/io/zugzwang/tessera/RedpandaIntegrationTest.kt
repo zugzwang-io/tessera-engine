@@ -20,6 +20,7 @@ import java.time.Duration
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 
 @Testcontainers
 class RedpandaIntegrationTest {
@@ -37,19 +38,24 @@ class RedpandaIntegrationTest {
         val log = changeLog("commit-test")
         val change = Change(
             "orders",
-            listOf(Change.Entry("a", byteArrayOf(1, 2)), Change.Entry("b", ByteArray(0))),
+            listOf(
+                Change.Put("a", byteArrayOf(1, 2)),
+                Change.Put("b", ByteArray(0)),
+                Change.Tombstone("c"),
+            ),
         )
 
         assertEquals(0, log.append(change))
-        assertEquals(1, log.append(Change("orders", listOf(Change.Entry("a", byteArrayOf(3))))))
+        assertEquals(1, log.append(Change("orders", listOf(Change.Put("a", byteArrayOf(3))))))
 
         val records = consumeAll("commit-test")
         assertEquals(2, records.size)
         val (collection, entries) = records.first()
         assertEquals("orders", collection)
-        assertEquals(listOf("a", "b"), entries.map { it.key })
-        assertContentEquals(byteArrayOf(1, 2), entries[0].value)
-        assertContentEquals(ByteArray(0), entries[1].value)
+        assertEquals(listOf("a", "b", "c"), entries.map { it.key })
+        assertContentEquals(byteArrayOf(1, 2), assertIs<Change.Put>(entries[0]).value)
+        assertContentEquals(ByteArray(0), assertIs<Change.Put>(entries[1]).value)
+        assertEquals(listOf(false, false, true), entries.map { it is Change.Tombstone })
     }
 
     @Test
@@ -64,7 +70,7 @@ class RedpandaIntegrationTest {
         assertEquals(HttpStatusCode.OK, response.status)
         assertEquals("""{"sequence":0}""", response.bodyAsText())
         val (_, entries) = consumeAll("endpoint-test").single()
-        assertContentEquals(byteArrayOf(1, 2), entries.single().value)
+        assertContentEquals(byteArrayOf(1, 2), assertIs<Change.Put>(entries.single()).value)
     }
 
     private fun consumeAll(topic: String): List<Pair<String, List<Change.Entry>>> {

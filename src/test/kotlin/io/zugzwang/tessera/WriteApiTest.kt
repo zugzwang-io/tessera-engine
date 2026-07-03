@@ -1,6 +1,7 @@
 package io.zugzwang.tessera
 
 import io.ktor.client.HttpClient
+import io.ktor.client.request.delete
 import io.ktor.client.request.put
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
@@ -14,6 +15,7 @@ import java.util.Base64
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 
 class RecordingChangeLog : ChangeLog {
     val changes = mutableListOf<Change>()
@@ -54,7 +56,7 @@ class WriteApiTest {
         val change = changeLog.changes.single()
         assertEquals("orders", change.collection)
         assertEquals(listOf("a", "b"), change.entries.map { it.key })
-        assertContentEquals(byteArrayOf(1, 2), change.entries[0].value)
+        assertContentEquals(byteArrayOf(1, 2), assertIs<Change.Put>(change.entries[0]).value)
     }
 
     @Test
@@ -88,6 +90,45 @@ class WriteApiTest {
         }
         assertEquals(HttpStatusCode.OK, response.status)
         assertEquals("""{"sequence":0}""", response.bodyAsText())
+    }
+
+    @Test
+    fun `delete commits a tombstone change`() = writeApiTest { client ->
+        val response = client.delete("/v1/collections/orders/keys/a")
+        assertEquals(HttpStatusCode.OK, response.status)
+        assertEquals("""{"sequence":0}""", response.bodyAsText())
+
+        val entry = changeLog.changes.single().entries.single()
+        assertIs<Change.Tombstone>(entry)
+        assertEquals("a", entry.key)
+    }
+
+    @Test
+    fun `a change can mix puts and tombstones atomically`() = writeApiTest { client ->
+        val response = client.post("/v1/collections/orders/changes") {
+            contentType(ContentType.Application.Json)
+            setBody("""{"entries":[{"key":"a","value":"AQ=="},{"key":"b","tombstone":true}]}""")
+        }
+        assertEquals(HttpStatusCode.OK, response.status)
+        assertEquals(listOf(false, true), changeLog.changes.single().entries.map { it is Change.Tombstone })
+    }
+
+    @Test
+    fun `rejects a tombstone entry carrying a value`() = writeApiTest { client ->
+        val response = client.post("/v1/collections/orders/changes") {
+            contentType(ContentType.Application.Json)
+            setBody("""{"entries":[{"key":"a","value":"AQ==","tombstone":true}]}""")
+        }
+        assertEquals(HttpStatusCode.BadRequest, response.status)
+    }
+
+    @Test
+    fun `rejects a non-tombstone entry without a value`() = writeApiTest { client ->
+        val response = client.post("/v1/collections/orders/changes") {
+            contentType(ContentType.Application.Json)
+            setBody("""{"entries":[{"key":"a"}]}""")
+        }
+        assertEquals(HttpStatusCode.BadRequest, response.status)
     }
 
     @Test
