@@ -12,7 +12,18 @@ import javax.sql.DataSource
  *
  * All three tables are written by the projector in ONE transaction per
  * batch, so at every commit `latest_state` equals exactly the fold of log
- * offsets `[0..projector_checkpoint.log_offset]`.
+ * offsets `[0..projector_checkpoint.log_offset]`. That is also why there are
+ * no foreign keys: these are parallel projections whose consistency is
+ * guaranteed by construction, with deliberately different retention
+ * (history is prunable, state is not) — FKs belong to system-of-record
+ * tables (the future placement schema), not projections.
+ *
+ * Failure posture: a record that cannot be applied (decode failure, CHECK
+ * violation) STALLS projection — the transaction rolls back and the
+ * checkpoint never advances past it. Records are never skipped: the
+ * watermark must never claim completeness it doesn't have. Skipping is a
+ * human act that leaves a trace. The alert that makes a stall loud is
+ * checkpoint lag (docs § observability).
  */
 object Schema {
 
