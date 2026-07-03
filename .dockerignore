@@ -5,5 +5,3 @@
 build/
 docs/
 *.md
-Dockerfile
-compose.yaml

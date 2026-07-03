@@ -19,15 +19,13 @@ jobs:
       - uses: gradle/actions/setup-gradle@v6
       - run: ./gradlew build
 
-  docker:
+  e2e:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - run: docker compose up --build --detach --wait
-      - run: curl -fsS http://localhost:8080/ | grep -q 'Hello, world!'
-      - name: Write a change through to the log
-        run: |
-          curl -fsS -X POST -H 'Content-Type: application/json' \
-            -d '{"entries":[{"key":"smoke","value":"AQ=="}]}' \
-            http://localhost:8080/v1/collections/smoke/changes | grep -q '"sequence":0'
-      - run: docker compose down
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 25
+      - uses: gradle/actions/setup-gradle@v6
+      - run: ./gradlew e2eTest
