@@ -33,7 +33,7 @@ Any change that violates one of these is wrong, no matter how convenient. Flag c
 - **Registration:** connect → snapshot at offset L from the in-memory cache (never from lagging OLAP) → stream L+1 onward.
 - **Placement:** `collection → partition` is an explicit load-aware mapping in Postgres (never modulo hash — partition count grows append-only, nothing rehashes). Cached at platform servers as a **lease with epoch** (see migration).
 - **Ownership:** `partition → server` leases in dedicated etcd (lease + watch + ModRevision fencing). Assignment controller (leader-elected replicas, one active) writes assignments; off the data path.
-- **Derived:** log consumers project into ClickHouse (analytics/UI replay) and object storage (full history). Authoritative replay reads the log; convenient replay reads OLAP.
+- **Derived:** log consumers project into read models. Current phase: a **Postgres projection** (`latest_state` + `change_history` + fenced `projector_checkpoint`, one transaction per batch — see docs § Postgres read model) serves latest-state reads and OLAP; ClickHouse and object storage arrive later as additional rebuildable projections. Authoritative replay reads the log, always.
 
 ## Tech stack (locked)
 
@@ -78,7 +78,7 @@ State machine lives in etcd/Postgres and every step is idempotent (controller cr
 
 Tracked in `docs/engine-design.md` § Design review. When touching adjacent code, respect that these are open; propose designs, don't improvise:
 
-- **Compacted topic design** (load-bearing, underspecified): a second derived topic; each record must embed the original log offset; producer/lag/failure mode TBD.
+- **Compacted topic design**: superseded for the current phase by the Postgres read model (docs § Postgres read model), which solves the frontier and random-access problems transactionally. Becomes relevant again only at the scale-graduation point.
 - **Write-id dedup**: where dedup state lives, retention. Kafka idempotent producers don't cover retries that switch partitions.
 - **Pinned-set quotas**: per-tenant subscription/pinned-byte quotas + defined degrade mode (the pinned LRU set is currently unbounded → OOM).
 - **Thundering herd on owner death**: reconnect jitter, snapshot coalescing (one rehydration serves N registrants), maybe warm standbys.
