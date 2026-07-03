@@ -76,6 +76,13 @@ object Schema {
                 )
                 // The frontier: how far into the log the tables above reflect.
                 //
+                // This cannot be derived from the data. max(latest_state) lies
+                // whenever the newest change was a tombstone (the row is gone);
+                // max(change_history) couples the resume position to retention
+                // (history is prunable — "how far applied" and "what data kept"
+                // are different questions); and the single-writer fence needs a
+                // lockable cell to compare-and-set, which no aggregate provides.
+                //
                 // - Advanced in the same transaction as the rows, so the view is
                 //   never approximately consistent — it is exactly fold[0..F].
                 //   Readers return F as the watermark; rehydrating consumers
@@ -84,8 +91,11 @@ object Schema {
                 // - The projector's resume position comes from here, never from
                 //   Kafka consumer offsets — a crash between the pg commit and a
                 //   Kafka ack cannot cause replay (and replays are no-ops anyway).
-                // - Keyed by partition so the schema survives the multi-partition
-                //   world without migration; today exactly one row (partition 0).
+                // - log_partition is the row's identity, not future-proofing: a
+                //   checkpoint is a checkpoint OF a partition, and the fence must
+                //   name a specific row to lock. (History rows need no partition
+                //   column today — (log_offset, entry_index) already identifies
+                //   them; it joins that PK only when multi-partition lands.)
                 // - Single-writer fence: the advance is an UPDATE guarded on the
                 //   expected previous offset; a competing projector matches zero
                 //   rows and aborts its whole transaction.
