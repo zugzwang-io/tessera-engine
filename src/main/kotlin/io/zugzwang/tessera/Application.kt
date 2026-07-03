@@ -9,8 +9,21 @@ import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
+import org.slf4j.LoggerFactory
+import kotlin.concurrent.thread
 
 fun main() {
+    if (System.getenv("POSTGRES_URL") != null) {
+        val projector = Projector.fromEnv(Postgres.dataSourceFromEnv())
+        thread(name = "projector", isDaemon = true) {
+            try {
+                projector.run()
+            } catch (cause: Exception) {
+                // Projection stops (view staleness grows); the write path keeps serving.
+                LoggerFactory.getLogger("io.zugzwang.tessera.Projector").error("projector stopped", cause)
+            }
+        }
+    }
     val port = System.getenv("PORT")?.toInt() ?: 8080
     embeddedServer(Netty, port = port, module = Application::module).start(wait = true)
 }
