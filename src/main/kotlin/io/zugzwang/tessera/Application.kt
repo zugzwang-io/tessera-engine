@@ -15,7 +15,7 @@ fun main() {
     embeddedServer(Netty, port = port, module = Application::module).start(wait = true)
 }
 
-fun Application.module() {
+fun Application.module(changeLog: ChangeLog = KafkaChangeLog.fromEnv()) {
     install(ContentNegotiation) {
         json()
     }
@@ -23,6 +23,6 @@ fun Application.module() {
         get("/") {
             call.respondText("Hello, world!")
         }
-        writeApi()
+        writeApi(changeLog)
     }
 }
