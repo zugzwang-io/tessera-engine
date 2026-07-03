@@ -142,6 +142,18 @@ The unit of write is a **change**: one or more `(key, opaque-bytes)` entries in 
 
 ---
 
+## Postgres read model (decided 2026-07-02)
+
+For the current phase, a **Postgres projection replaces the derived compacted topic** as the latest-state view and doubles as the OLAP store. A single projector consumes the log and maintains, **in one transaction per batch**: `change_history` (append-only, *never conflated* — the OLAP projection; prunable at will since the log holds truth), `latest_state` (conflated per key within each batch; tombstones delete rows), and `projector_checkpoint` (the frontier F). Transactional coupling means the view always equals exactly the fold of `[0..F]` — the frontier is explicit, so rehydration for any future consumer is snapshot + tail from F+1, and new keys can never be missed.
+
+- **Resume position is the pg checkpoint, never Kafka consumer offsets** — a crash between pg commit and Kafka ack cannot replay. All writes are idempotent anyway (offset-guarded upserts/deletes, history keyed by `(offset, entry_index)` with do-nothing conflicts), so rebuilds and redeliveries are no-ops.
+- **Single-writer fence:** the checkpoint advance is guarded on the expected previous offset; a zombie projector aborts instead of interleaving.
+- **Staleness is the batch window** (poll timeout + transaction time, ~1s): acceptable by decision, in exchange for much lower DB load via intra-batch conflation. Checkpoint lag vs. log end is the first-class alert metric (the successor of "compacted-topic lag").
+- **Known ceiling, accepted:** this puts write-rate-proportional load on Postgres. The projection is strictly derived and rebuildable, so graduating later (partitioned pg, or the original per-partition compacted topic) is a projection swap, not a migration. The durable contract is the *interface*: snapshot + frontier + tail.
+- **ClickHouse deferred:** `change_history` serves OLAP for now; ClickHouse arrives as an additional rebuildable projection when analytics demand columnar, backfilled from offset 0.
+
+---
+
 ## Design review — open issues (to fix)
 
 *Added from design review. Ordered roughly by severity. See also "Proposed migration redesign" below, which addresses the first cluster.*

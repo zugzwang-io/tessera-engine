@@ -9,6 +9,7 @@ import org.apache.kafka.common.serialization.ByteArrayDeserializer
 import org.apache.kafka.common.serialization.StringDeserializer
 import org.testcontainers.containers.GenericContainer
 import org.testcontainers.containers.Network
+import org.testcontainers.containers.PostgreSQLContainer
 import org.testcontainers.containers.wait.strategy.Wait
 import org.testcontainers.images.builder.ImageFromDockerfile
 import org.testcontainers.junit.jupiter.Container
@@ -19,11 +20,13 @@ import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.nio.file.Path
+import java.sql.DriverManager
 import java.time.Duration
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.fail
 
 /** The app as it ships: built from the Dockerfile, wired to Redpanda over the container network. */
 @Testcontainers
@@ -41,6 +44,12 @@ class EndToEndTest {
 
         @Container
         @JvmStatic
+        val postgres: PostgreSQLContainer<*> = PostgreSQLContainer("postgres:18.4")
+            .withNetwork(network)
+            .withNetworkAliases("postgres")
+
+        @Container
+        @JvmStatic
         val app: GenericContainer<*> = GenericContainer(
             // The context is the Dockerfile's parent directory (honors .dockerignore);
             // the path must be absolute or that parent resolves to null.
@@ -48,9 +57,12 @@ class EndToEndTest {
         )
             .withNetwork(network)
             .withEnv("KAFKA_BOOTSTRAP_SERVERS", "redpanda:19093")
+            .withEnv("POSTGRES_URL", "jdbc:postgresql://postgres:5432/test")
+            .withEnv("POSTGRES_USER", "test")
+            .withEnv("POSTGRES_PASSWORD", "test")
             .withExposedPorts(8080)
             .waitingFor(Wait.forHttp("/").forStatusCode(200))
-            .dependsOn(redpanda)
+            .dependsOn(redpanda, postgres)
     }
 
     private val http = HttpClient.newHttpClient()
@@ -85,6 +97,28 @@ class EndToEndTest {
     @Test
     fun `validation runs in the shipped image`() {
         assertEquals(400, postChange("""{"entries":[]}""").statusCode())
+    }
+
+    /** Reads are lagging by the projector batch window; poll pg until it catches up. */
+    @Test
+    fun `the projector inside the shipped image folds writes into postgres`() {
+        assertEquals(200, postChange("""{"entries":[{"key":"projected","value":"BQY="}]}""").statusCode())
+
+        val deadline = System.nanoTime() + Duration.ofSeconds(30).toNanos()
+        while (true) {
+            val value = DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password)
+                .use { connection ->
+                    connection
+                        .prepareStatement("SELECT value FROM latest_state WHERE collection = 'orders' AND key = 'projected'")
+                        .use { it.executeQuery().use { rs -> if (rs.next()) rs.getBytes(1) else null } }
+                }
+            if (value != null) {
+                assertContentEquals(byteArrayOf(5, 6), value)
+                return
+            }
+            if (System.nanoTime() > deadline) fail("write was never projected into postgres")
+            Thread.sleep(250)
+        }
     }
 
     private fun consumeAll(topic: String) = KafkaConsumer(
