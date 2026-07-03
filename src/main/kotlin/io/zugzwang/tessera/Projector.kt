@@ -13,6 +13,12 @@ import java.sql.Connection
 import java.time.Duration
 import javax.sql.DataSource
 
+internal fun readProjectorCheckpoint(connection: Connection): Long? = connection.createStatement().use { statement ->
+    statement.executeQuery("SELECT log_offset FROM projector_checkpoint WHERE log_partition = 0").use {
+        if (it.next()) it.getLong(1) else null
+    }
+}
+
 object Postgres {
     fun dataSourceFromEnv(): DataSource = HikariDataSource(
         HikariConfig().apply {
@@ -52,7 +58,7 @@ class Projector(
 
     fun start() {
         dataSource.connection.use { it.ensureSchema() }
-        expectedCheckpoint = dataSource.connection.use { it.readCheckpoint() }
+        expectedCheckpoint = dataSource.connection.use { readProjectorCheckpoint(it) }
         consumer.assign(listOf(partition))
         when (val next = expectedCheckpoint?.plus(1)) {
             null -> consumer.seekToBeginning(listOf(partition))
@@ -166,12 +172,6 @@ class Projector(
             ).use { it.setLong(1, offset); it.setLong(2, expected); it.executeUpdate() }
         }
         check(updated == 1) { "checkpoint fence violated: another projector owns this partition" }
-    }
-
-    private fun Connection.readCheckpoint(): Long? = createStatement().use { statement ->
-        statement.executeQuery("SELECT log_offset FROM projector_checkpoint WHERE log_partition = 0").use {
-            if (it.next()) it.getLong(1) else null
-        }
     }
 
     private fun Connection.ensureSchema() = createStatement().use { statement ->

@@ -13,8 +13,9 @@ import org.slf4j.LoggerFactory
 import kotlin.concurrent.thread
 
 fun main() {
+    val dataSource = lazy { Postgres.dataSourceFromEnv() }
     if (System.getenv("POSTGRES_URL") != null) {
-        val projector = Projector.fromEnv(Postgres.dataSourceFromEnv())
+        val projector = Projector.fromEnv(dataSource.value)
         thread(name = "projector", isDaemon = true) {
             try {
                 projector.run()
@@ -25,10 +26,15 @@ fun main() {
         }
     }
     val port = System.getenv("PORT")?.toInt() ?: 8080
-    embeddedServer(Netty, port = port, module = Application::module).start(wait = true)
+    embeddedServer(Netty, port = port) {
+        module(KafkaChangeLog.fromEnv(), PgStateView { dataSource.value })
+    }.start(wait = true)
 }
 
-fun Application.module(changeLog: ChangeLog = KafkaChangeLog.fromEnv()) {
+fun Application.module(
+    changeLog: ChangeLog = KafkaChangeLog.fromEnv(),
+    stateView: StateView = PgStateView { Postgres.dataSourceFromEnv() },
+) {
     install(ContentNegotiation) {
         json()
     }
@@ -37,5 +43,6 @@ fun Application.module(changeLog: ChangeLog = KafkaChangeLog.fromEnv()) {
             call.respondText("Hello, world!")
         }
         writeApi(changeLog)
+        readApi(stateView)
     }
 }
