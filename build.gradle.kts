@@ -47,8 +47,10 @@ testing {
             dependencies {
                 implementation(project())
                 implementation(libs.kafka.clients)
+                implementation(libs.postgresql)
                 implementation(libs.kotlin.test.junit5)
                 implementation(libs.testcontainers.junit.jupiter)
+                implementation(libs.testcontainers.postgresql)
                 implementation(libs.testcontainers.redpanda)
             }
         }

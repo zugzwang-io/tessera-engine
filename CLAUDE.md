@@ -33,7 +33,7 @@ Any change that violates one of these is wrong, no matter how convenient. Flag c
 - **Registration:** connect → snapshot at offset L from the in-memory cache (never from lagging OLAP) → stream L+1 onward.
 - **Placement:** `collection → partition` is an explicit load-aware mapping in Postgres (never modulo hash — partition count grows append-only, nothing rehashes). Cached at platform servers as a **lease with epoch** (see migration).
 - **Ownership:** `partition → server` leases in dedicated etcd (lease + watch + ModRevision fencing). Assignment controller (leader-elected replicas, one active) writes assignments; off the data path.
-- **Derived:** log consumers project into ClickHouse (analytics/UI replay) and object storage (full history). Authoritative replay reads the log; convenient replay reads OLAP.
+- **Derived:** log consumers project into read models. Current phase: a **Postgres projection** (`latest_state` + `change_history` + fenced `projector_checkpoint`, one transaction per batch — see docs § Postgres read model and `Schema.kt`) serves latest-state reads and OLAP; ClickHouse and object storage arrive later as additional rebuildable projections. Authoritative replay reads the log, always.
 
 ## Tech stack (locked)
 
@@ -56,6 +56,8 @@ Any change that violates one of these is wrong, no matter how convenient. Flag c
 Fixed binary envelope, versioned ABI. Must carry at minimum: tenant/collection/key, **epoch**, **write-id** (for retry dedup across partitions), and headers for the agent convention (session/agent IDs, event type, parent-span). Payload is opaque bytes. Treat envelope changes as ABI changes: versioned, additive, never reinterpreted.
 
 Implemented so far: `EnvelopeV1` — a provisional minimal framing (version byte, entry count, then per-entry key, flags byte, value; flag bit 0 = tombstone). Tenant, epoch, write-id, and headers land with the full envelope design. **ABI freeze begins at the first real deployment**: until then v1 may be amended in place; after that, any layout change bumps the version byte and old layouts are never reinterpreted.
+
+**Entry order is part of the ABI.** Encode serializes entries in submission order; decode must preserve wire order. `(log_offset, entry_index)` is the permanent identity of an entry in derived stores (e.g. `change_history`), so no future envelope version may reorder, sort, or dedup entries on the wire.
 
 **Deploy readers before writers.** The version byte makes an old reader *refuse* a new layout rather than misread it — which means a new-envelope writer deployed before consumers are upgraded stalls projection (correctly). Envelope version bumps roll out consumers first, producers second.
 
@@ -80,7 +82,7 @@ State machine lives in etcd/Postgres and every step is idempotent (controller cr
 
 Tracked in `docs/engine-design.md` § Design review. When touching adjacent code, respect that these are open; propose designs, don't improvise:
 
-- **Compacted topic design** (load-bearing, underspecified): a second derived topic; each record must embed the original log offset; producer/lag/failure mode TBD.
+- **Compacted topic design**: superseded for the current phase by the Postgres read model (docs § Postgres read model), which solves the frontier and random-access problems transactionally. Becomes relevant again only at the scale-graduation point.
 - **Write-id dedup**: where dedup state lives, retention. Kafka idempotent producers don't cover retries that switch partitions.
 - **Pinned-set quotas**: per-tenant subscription/pinned-byte quotas + defined degrade mode (the pinned LRU set is currently unbounded → OOM).
 - **Thundering herd on owner death**: reconnect jitter, snapshot coalescing (one rehydration serves N registrants), maybe warm standbys.
